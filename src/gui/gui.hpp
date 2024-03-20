@@ -21,4 +21,5 @@ public:
 	void render_installed_mods_panel();
 	void render_available_mods_panel();
 	void render();
+	void render_main_menu_bar();
 };

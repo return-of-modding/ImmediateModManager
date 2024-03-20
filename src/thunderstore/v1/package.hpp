@@ -112,5 +112,6 @@ namespace ts::v1
 		NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(package, name, full_name, owner, package_url, date_created, date_updated, uuid4, rating_score, is_pinned, is_deprecated, has_nsfw_content, categories, versions, donation_link)
 
 		bool is_latest_installed = false;
+		bool is_local            = false;
 	};
 } // namespace ts::v1

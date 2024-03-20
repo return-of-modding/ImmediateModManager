@@ -1,15 +1,19 @@
 #include "gui.hpp"
 
+#include <codecvt>
 #include <cpr/cpr.h>
 #include <d3d11.h>
 #include <fcntl.h>
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <imgui_toggle/imgui_toggle.h>
 #include <io.h>
 #include <iostream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <queue>
 #include <semver.hpp>
+#include <shellapi.h>
 #include <string/string.hpp>
 #include <thunderstore/v1/manifest.hpp>
 #include <thunderstore/v1/package.hpp>
@@ -18,17 +22,38 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
-#include <codecvt>
-#include <shellapi.h>
+struct package_enabled_state
+{
+	bool is_enabled = true;
+	std::string full_name;
+
+	NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(package_enabled_state, is_enabled, full_name)
+};
+
+struct profile
+{
+	std::string name = "default";
+
+	std::vector<package_enabled_state> package_enabled_states;
+
+	NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(profile, name, package_enabled_states)
+};
 
 struct app_cache
 {
 	std::string game_folder_path_utf8{};
 	std::wstring game_folder_path{};
 
+	std::string rom_folder_path_utf8{};
+
 	std::wstring game_exe_path{};
 
-	NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(app_cache, game_folder_path, game_exe_path)
+	std::vector<std::shared_ptr<profile>> profiles{};
+	std::string active_profile_name = "default";
+
+	NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(app_cache, game_folder_path, game_exe_path, profiles, active_profile_name)
+
+	profile* active_profile{};
 };
 
 static app_cache s_app_cache;
@@ -94,6 +119,29 @@ void gui::render_docking_layout()
 	}
 }
 
+void gui::render_main_menu_bar()
+{
+	if (ImGui::BeginMainMenuBar())
+	{
+		if (s_app_cache.game_exe_path.size())
+		{
+			if (ImGui::Button("Launch Game"))
+			{
+				if (std::filesystem::exists(s_app_cache.game_exe_path))
+				{
+					ShellExecuteW(NULL, NULL, L"steam://run/1337520", NULL, NULL, SW_SHOW);
+				}
+				else
+				{
+					MessageBoxA(0, "Game executable path lead to a non existing file. Please launch the game at least once while the mod manager is running", "ImmediateModManager", 0);
+				}
+			}
+		}
+
+		ImGui::EndMainMenuBar();
+	}
+}
+
 // Simple helper function to load an image into a DX11 texture with common settings
 bool LoadTextureFromFile(FILE* f, ID3D11ShaderResourceView** out_srv, int* out_width, int* out_height)
 {
@@ -152,7 +200,9 @@ struct installed_package
 {
 	ts::v1::package* pkg;
 	size_t pkg_version_index;
-	bool is_local = false;
+	bool is_enabled = true;
+	bool is_local   = false;
+	std::filesystem::path folder;
 };
 
 static std::vector<installed_package> installed_packages;
@@ -238,11 +288,26 @@ void gui::render_available_mods_panel()
 		{
 			ImGui::Image((void*)package->versions[0].icon_texture, ImVec2(256 / 2, 256 / 2));
 			ImGui::SameLine();
-			ImGui::TextWrapped("Name: %s\n\nDescription: %s\n\nIs Latest Installed: %s\n\nLatest Version: %s",
-			                   package->name.c_str(),
-			                   package->versions[0].description.c_str(),
-			                   package->is_latest_installed ? "Yes" : "No",
-			                   package->versions[0].version_number.c_str());
+			if (package->is_local)
+			{
+				ImGui::TextWrapped("Author: %s\n\nName: %s\n\nDescription: %s\n\nVersion: %s",
+				                   package->owner.c_str(),
+				                   package->name.c_str(),
+				                   package->versions[0].description.c_str(),
+				                   package->versions[0].version_number.c_str());
+			}
+			else
+			{
+				ImGui::TextWrapped(
+				    "Author: %s\n\nName: %s\n\nDescription: %s\n\nIs Latest Installed: %s\n\nLatest Version: %s",
+				    package->owner.c_str(),
+				    package->name.c_str(),
+				    package->versions[0].description.c_str(),
+				    package->is_latest_installed ? "Yes" : "No",
+				    package->versions[0].version_number.c_str());
+			}
+
+			ImGui::Separator();
 		}
 	}
 
@@ -309,6 +374,23 @@ static process_running_info is_process_running(const std::wstring& process_name)
 
 static void on_game_folder_found()
 {
+	if (!s_app_cache.active_profile)
+	{
+		if (!s_app_cache.profiles.size())
+		{
+			s_app_cache.profiles.push_back(std::make_shared<profile>());
+		}
+
+		for (const auto& prof : s_app_cache.profiles)
+		{
+			if (prof->name == s_app_cache.active_profile_name)
+			{
+				s_app_cache.active_profile = prof.get();
+				break;
+			}
+		}
+	}
+
 	const auto rom_folder = std::filesystem::path(s_app_cache.game_folder_path) / "ReturnOfModding";
 
 	const auto config_folder = rom_folder / "config";
@@ -343,7 +425,9 @@ static void on_game_folder_found()
 		std::ifstream f(entry.path());
 		ts::v1::manifest m = nlohmann::json::parse(f, nullptr, false, true);
 
-		m.author_name = (char*)entry.path().parent_path().filename().u8string().c_str();
+		const auto pkg_folder = entry.path().parent_path();
+
+		m.author_name = (char*)pkg_folder.filename().u8string().c_str();
 		if (m.author_name.contains('-'))
 		{
 			m.author_name = imm::string::split(m.author_name, '-')[0];
@@ -351,9 +435,21 @@ static void on_game_folder_found()
 
 		const auto full_name_package = m.author_name + '-' + m.name;
 
+		bool is_enabled        = true;
+		bool has_enabled_entry = false;
+		for (const auto& enabled_state : s_app_cache.active_profile->package_enabled_states)
+		{
+			if (enabled_state.full_name == full_name_package)
+			{
+				is_enabled        = enabled_state.is_enabled;
+				has_enabled_entry = true;
+				break;
+			}
+		}
+
 		std::unique_lock t_queue_lock(t_queue_mutex);
 		t_queue.push(
-		    [full_name_package, m]
+		    [full_name_package, m, pkg_folder, is_enabled, has_enabled_entry]
 		    {
 			    auto find_installed_pkg_from_available_packages = [&](bool is_local)
 			    {
@@ -366,7 +462,13 @@ static void on_game_folder_found()
 						    {
 							    if (pkg_ver.version_number == m.version_number)
 							    {
-								    installed_packages.push_back({.pkg = package.get(), .pkg_version_index = i, .is_local = is_local});
+								    installed_packages.push_back({.pkg = package.get(), .pkg_version_index = i, .is_enabled = is_enabled, .is_local = is_local, .folder = pkg_folder});
+
+								    if (!has_enabled_entry)
+								    {
+									    s_app_cache.active_profile->package_enabled_states.push_back({.is_enabled = is_enabled, .full_name = full_name_package});
+								    }
+
 								    return true;
 							    }
 
@@ -389,6 +491,7 @@ static void on_game_folder_found()
 			    local_pkg->name      = m.name;
 			    local_pkg->full_name = full_name_package;
 			    local_pkg->owner     = m.author_name;
+			    local_pkg->is_local  = true;
 			    local_pkg->versions.push_back({.name = m.name, .full_name = full_name_package, .description = m.description, .version_number = m.version_number, .dependencies = m.dependencies, .is_installed = true});
 			    packages.push_back(std::move(local_pkg));
 
@@ -459,6 +562,9 @@ void gui::render_installed_mods_panel()
 				s_app_cache.game_folder_path_utf8 =
 				    (char*)std::filesystem::path(s_app_cache.game_folder_path).u8string().c_str();
 
+				s_app_cache.rom_folder_path_utf8 =
+				    (char*)(std::filesystem::path(s_app_cache.game_folder_path_utf8) / "ReturnOfModding").u8string().c_str();
+
 				has_valid_game_folder_path = true;
 				on_game_folder_found();
 			}
@@ -482,6 +588,10 @@ void gui::render_installed_mods_panel()
 
 						    s_app_cache.game_folder_path_utf8 =
 						        (char*)std::filesystem::path(s_app_cache.game_folder_path).u8string().c_str();
+
+						    s_app_cache.rom_folder_path_utf8 = (char*)(std::filesystem::path(s_app_cache.game_folder_path_utf8) / "ReturnOfModding")
+						                                           .u8string()
+						                                           .c_str();
 
 						    has_valid_game_folder_path = true;
 						    on_game_folder_found();
@@ -528,17 +638,35 @@ void gui::render_installed_mods_panel()
 
 	if (has_valid_game_folder_path)
 	{
-		ImGui::TextWrapped("Game Folder: %s", s_app_cache.game_folder_path_utf8.c_str());
+		ImGui::TextWrapped("Game Folder");
+		ImGui::SameLine();
+		if (ImGui::Button("Open##game_folder"))
+		{
+			ShellExecuteW(NULL, NULL, L"explorer.exe", std::filesystem::path(s_app_cache.game_folder_path_utf8).c_str(), NULL, SW_NORMAL);
+		}
+		ImGui::TextWrapped(s_app_cache.game_folder_path_utf8.c_str());
+
+		ImGui::Separator();
+
+		ImGui::TextWrapped("ReturnOfModding Folder");
+		ImGui::SameLine();
+		if (ImGui::Button("Open##rom_folder"))
+		{
+			ShellExecuteW(NULL, NULL, L"explorer.exe", std::filesystem::path(s_app_cache.rom_folder_path_utf8).c_str(), NULL, SW_NORMAL);
+		}
+		ImGui::TextWrapped(s_app_cache.rom_folder_path_utf8.c_str());
 
 		ImGui::Separator();
 
 		ImGui::TextWrapped("Installed Mods (%llu)", installed_packages.size());
 
-		for (const auto& installed_package : installed_packages)
+		int i = 0;
+		for (auto& installed_package : installed_packages)
 		{
 			ImGui::Text("%s %s",
 			            installed_package.pkg->versions[installed_package.pkg_version_index].full_name.c_str(),
 			            installed_package.is_local ? "(Local Package)" : "");
+
 			if (installed_package.is_local)
 			{
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -546,6 +674,22 @@ void gui::render_installed_mods_panel()
 					ImGui::SetTooltip("Local package. Could not find it on the thunderstore website.");
 				}
 			}
+
+			ImGui::PushID(i);
+
+			if (ImGui::Toggle("Is Enabled", &installed_package.is_enabled, ImGuiToggleFlags_Animated))
+			{
+						}
+
+			if (ImGui::Button("Open Folder"))
+			{
+				ShellExecuteW(NULL, NULL, L"explorer.exe", installed_package.folder.c_str(), NULL, SW_NORMAL);
+			}
+			ImGui::PopID();
+
+			ImGui::Separator();
+
+			i++;
 		}
 	}
 	else
@@ -566,25 +710,7 @@ void gui::render()
 
 	render_docking_layout();
 
-	if (ImGui::BeginMainMenuBar())
-	{
-		if (s_app_cache.game_exe_path.size())
-		{
-			if (ImGui::Button("Launch Game"))
-			{
-				if (std::filesystem::exists(s_app_cache.game_exe_path))
-				{
-					ShellExecuteW(NULL, NULL, L"steam://run/1337520", NULL, NULL, SW_SHOW);
-				}
-				else
-				{
-					MessageBoxA(0, "Game executable path lead to a non existing file. Please launch the game at least once while the mod manager is running", "ImmediateModManager", 0);
-				}
-			}
-		}
-
-		ImGui::EndMainMenuBar();
-	}
+	render_main_menu_bar();
 
 	render_installed_mods_panel();
 
