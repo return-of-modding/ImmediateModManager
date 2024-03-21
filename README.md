@@ -1,4 +1,1 @@
 # ImmediateModManager
-
-## What's this?
-

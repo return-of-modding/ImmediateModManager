@@ -720,11 +720,12 @@ void gui::render_available_mods_panel()
 										    }
 
 										    const auto rom_config_plugin_folder = std::filesystem::path(s_app_cache.rom_folder_path_utf8) / "config" / output_package_folder_name;
-										    if (!std::filesystem::exists(rom_plugins_data_plugin_folder))
+										    if (!std::filesystem::exists(rom_config_plugin_folder))
 										    {
-											    std::filesystem::create_directories(rom_plugins_data_plugin_folder);
+											    std::filesystem::create_directories(rom_config_plugin_folder);
 										    }
 
+										    std::vector<std::filesystem::path> already_copied_directories;
 										    for (const auto& entry : std::filesystem::recursive_directory_iterator(extracted_zip_folder_path, std::filesystem::directory_options::skip_permission_denied))
 										    {
 											    std::cout << (char*)entry.path().u8string().c_str() << std::endl;
@@ -734,19 +735,34 @@ void gui::render_available_mods_panel()
 												    std::filesystem::copy(entry.path(),
 												                          rom_plugins_plugin_folder / entry.path().filename(),
 												                          std::filesystem::copy_options::overwrite_existing);
-
-												    continue;
 											    }
-
-											    if (entry.is_directory())
+											    else if (entry.is_directory())
 											    {
+												    auto is_subpath = [](const std::filesystem::path& path, const std::filesystem::path& base) -> bool
+												    {
+													    auto rel = std::filesystem::relative(path, base);
+													    return !rel.empty() && rel.native()[0] != '.';
+												    };
+
+												    bool is_already_copied = false;
+												    for (const auto& already_copied_dir : already_copied_directories)
+												    {
+													    if (is_subpath(entry.path(), already_copied_dir))
+													    {
+														    is_already_copied = true;
+													    }
+												    }
+												    if (is_already_copied)
+												    {
+													    continue;
+												    }
+													already_copied_directories.push_back(entry.path());
+
 												    if (entry.path().filename() == "plugins")
 												    {
 													    std::filesystem::copy(entry.path(),
 													                          rom_plugins_plugin_folder / entry.path().filename(),
 													                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
-
-													    continue;
 												    }
 												    else if (entry.path().filename() == "plugins_data")
 												    {
@@ -754,24 +770,18 @@ void gui::render_available_mods_panel()
 													                          rom_plugins_data_plugin_folder
 													                              / entry.path().filename(),
 													                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
-
-													    continue;
 												    }
 												    else if (entry.path().filename() == "config")
 												    {
 													    std::filesystem::copy(entry.path(),
 													                          rom_config_plugin_folder / entry.path().filename(),
 													                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
-
-													    continue;
 												    }
 												    else
 												    {
 													    std::filesystem::copy(entry.path(),
 													                          rom_plugins_plugin_folder / entry.path().filename(),
 													                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
-
-													    continue;
 												    }
 											    }
 										    }
