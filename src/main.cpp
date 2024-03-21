@@ -12,6 +12,7 @@
 #include "imgui_impl/win32.h"
 
 #include <d3d11.h>
+#include <filesystem>
 #include <locale.h>
 #include <tchar.h>
 
@@ -78,6 +79,16 @@ int main(int, char**)
 	{
 		style.WindowRounding              = 0.0f;
 		style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+	}
+
+	auto font_path = "./assets/fonts/Comfortaa-Medium.ttf";
+	if (!std::filesystem::exists(font_path))
+	{
+		font_path = "../../../../assets/fonts/Comfortaa-Medium.ttf";
+	}
+	if (std::filesystem::exists(font_path))
+	{
+		auto custom_font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path, 16);
 	}
 
 	// Setup Platform/Renderer backends

@@ -19,6 +19,7 @@
 #include <thunderstore/v1/package.hpp>
 #include <tlhelp32.h>
 #include <vector>
+#include <zip/zip.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -26,8 +27,9 @@ struct package_enabled_state
 {
 	bool is_enabled = true;
 	std::string full_name;
+	std::string version;
 
-	NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(package_enabled_state, is_enabled, full_name)
+	NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(package_enabled_state, is_enabled, full_name, version)
 };
 
 struct profile
@@ -38,6 +40,8 @@ struct profile
 
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(profile, name, package_enabled_states)
 };
+
+static std::filesystem::path app_cache_path;
 
 struct app_cache
 {
@@ -54,6 +58,13 @@ struct app_cache
 	NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(app_cache, game_folder_path, game_exe_path, profiles, active_profile_name)
 
 	profile* active_profile{};
+
+	void save()
+	{
+		std::ofstream app_cache_file_stream(app_cache_path);
+		nlohmann::json j = *this;
+		app_cache_file_stream << j << std::endl;
+	}
 };
 
 static app_cache s_app_cache;
@@ -85,22 +96,22 @@ void gui::render_docking_layout()
 		if (ImGui::DockBuilderGetNode(ImGui::GetID(dockspace_title)) == NULL)
 		{
 			// Default docking setup.
-			ImGuiID dockspace_id = ImGui::GetID(dockspace_title);
+			ImGuiID dockspace_id  = ImGui::GetID(dockspace_title);
+			ImGuiID dock_id_left  = ImGui::GetID(available_mods_title);
+			ImGuiID dock_id_right = ImGui::GetID(installed_mods_title);
 			ImGui::DockBuilderRemoveNode(dockspace_id);                            // Clear out existing layout
 			ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace); // ImGuiDockNodeFlags_Dockspace); // Add empty node
 			ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
 
 			// This variable will track the document node, however we are not using it here as we aren't docking anything into it.
 			ImGuiID dock_main_id = dockspace_id;
-			ImGuiID dock_id_right = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Right, 0.18f, NULL, &dock_main_id);
-			ImGuiID dock_id_left = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.20f, NULL, &dock_main_id);
-			ImGuiID dock_id_bottom = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Down, 0.208f, NULL, &dock_main_id);
+			ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.5f, &dock_id_left, &dock_id_right);
 
 			ImGuiDockNode* node = ImGui::DockBuilderGetNode(dock_main_id);
 			//node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
 
-			ImGui::DockBuilderDockWindow(installed_mods_title, dock_id_left);
-			ImGui::DockBuilderDockWindow(available_mods_title, dock_id_right);
+			ImGui::DockBuilderDockWindow(available_mods_title, dock_id_left);
+			ImGui::DockBuilderDockWindow(installed_mods_title, dock_id_right);
 
 			ImGui::DockBuilderFinish(dockspace_id);
 		}
@@ -192,6 +203,7 @@ bool LoadTextureFromFile(FILE* f, ID3D11ShaderResourceView** out_srv, int* out_w
 }
 
 static auto available_packages_ready = false;
+// static std::mutex packages_mutex;
 static std::vector<std::unique_ptr<ts::v1::package>> packages;
 
 static auto has_valid_game_folder_path = false;
@@ -206,8 +218,275 @@ struct installed_package
 };
 
 static std::vector<installed_package> installed_packages;
+static std::vector<ts::v1::package> packages_json;
 static std::mutex t_queue_mutex;
 static std::queue<std::function<void()>> t_queue;
+
+static void init_available_packages()
+{
+	packages.clear();
+	for (auto& package : packages_json)
+	{
+		package.full_name_lower = imm::string::to_lower(package.full_name);
+		if (package.full_name_lower.contains("immediatemodman"))
+		{
+			continue;
+		}
+		for (auto& pkg_version : package.versions)
+		{
+			pkg_version.full_name_lower = imm::string::to_lower(package.full_name);
+		}
+		packages.push_back(std::make_unique<ts::v1::package>(package));
+	}
+}
+
+static void on_game_folder_found()
+{
+	if (installed_packages.size())
+	{
+		installed_packages.clear();
+		std::unordered_map<std::string, ID3D11ShaderResourceView*> full_name_to_tex;
+		// std::unique_lock packages_lock(packages_mutex);
+		for (const auto& pkg : packages)
+		{
+			for (const auto& pkg_version : pkg->versions)
+			{
+				full_name_to_tex[pkg_version.full_name] = pkg_version.icon_texture;
+			}
+		}
+		init_available_packages();
+		for (const auto& pkg : packages)
+		{
+			for (auto& pkg_version : pkg->versions)
+			{
+				pkg_version.icon_texture = full_name_to_tex[pkg_version.full_name];
+			}
+		}
+	}
+
+	if (!s_app_cache.active_profile)
+	{
+		if (!s_app_cache.profiles.size())
+		{
+			s_app_cache.profiles.push_back(std::make_shared<profile>());
+		}
+
+		for (const auto& prof : s_app_cache.profiles)
+		{
+			if (prof->name == s_app_cache.active_profile_name)
+			{
+				s_app_cache.active_profile = prof.get();
+				break;
+			}
+		}
+	}
+
+	const auto rom_folder = std::filesystem::path(s_app_cache.game_folder_path) / "ReturnOfModding";
+
+	const auto config_folder = rom_folder / "config";
+	if (!std::filesystem::exists(config_folder))
+	{
+		std::filesystem::create_directories(config_folder);
+	}
+
+	const auto plugins_data_folder = rom_folder / "plugins_data";
+	if (!std::filesystem::exists(plugins_data_folder))
+	{
+		std::filesystem::create_directories(plugins_data_folder);
+	}
+
+	const auto plugins_folder = rom_folder / "plugins";
+	if (!std::filesystem::exists(plugins_folder))
+	{
+		std::filesystem::create_directories(plugins_folder);
+	}
+	for (const auto& entry : std::filesystem::recursive_directory_iterator(plugins_folder, std::filesystem::directory_options::skip_permission_denied))
+	{
+		if (entry.is_directory())
+		{
+			continue;
+		}
+
+		if (entry.path().filename() != "manifest.json" && entry.path().filename() != "manifest_disabled.json")
+		{
+			continue;
+		}
+
+		std::ifstream f(entry.path());
+		ts::v1::manifest m = nlohmann::json::parse(f, nullptr, false, true);
+
+		const auto pkg_folder = entry.path().parent_path();
+
+		m.author_name = (char*)pkg_folder.filename().u8string().c_str();
+		if (m.author_name.contains('-'))
+		{
+			m.author_name = imm::string::split(m.author_name, '-')[0];
+		}
+
+		const auto full_name_package = m.author_name + '-' + m.name;
+
+		bool is_enabled        = true;
+		bool has_enabled_entry = false;
+		for (auto& enabled_state : s_app_cache.active_profile->package_enabled_states)
+		{
+			if (enabled_state.full_name == full_name_package)
+			{
+				is_enabled = enabled_state.is_enabled;
+
+				if (is_enabled && entry.path().filename() == "manifest_disabled.json")
+				{
+					// inconsistency between profile state and manifest filename
+					// the filename has priority
+
+					is_enabled               = false;
+					enabled_state.is_enabled = false;
+				}
+
+				has_enabled_entry = true;
+				break;
+			}
+		}
+
+		std::unique_lock t_queue_lock(t_queue_mutex);
+		t_queue.push(
+		    [full_name_package, m, pkg_folder, is_enabled, has_enabled_entry]
+		    {
+			    auto find_installed_pkg_from_available_packages = [&](bool is_local)
+			    {
+				    // std::unique_lock packages_lock(packages_mutex);
+				    for (auto& package : packages)
+				    {
+					    if (package->full_name == full_name_package)
+					    {
+						    size_t i = 0;
+						    for (auto& pkg_ver : package->versions)
+						    {
+							    if (pkg_ver.version_number == m.version_number)
+							    {
+								    installed_packages.push_back({.pkg = package.get(), .pkg_version_index = i, .is_enabled = is_enabled, .is_local = is_local, .folder = pkg_folder});
+
+								    if (!has_enabled_entry)
+								    {
+									    s_app_cache.active_profile->package_enabled_states.push_back({.is_enabled = is_enabled, .full_name = full_name_package, .version = m.version_number});
+								    }
+
+								    package->is_installed             = true;
+								    package->installed_version_number = pkg_ver.version_number;
+
+								    return true;
+							    }
+
+							    i++;
+						    }
+					    }
+				    }
+
+				    return false;
+			    };
+
+			    if (find_installed_pkg_from_available_packages(false))
+			    {
+				    return;
+			    }
+
+			    // Reaching here means it's just a local package
+
+			    auto local_pkg                      = std::make_unique<ts::v1::package>();
+			    local_pkg->name                     = m.name;
+			    local_pkg->full_name                = full_name_package;
+			    local_pkg->owner                    = m.author_name;
+			    local_pkg->is_local                 = true;
+			    local_pkg->is_installed             = true;
+			    local_pkg->installed_version_number = m.version_number;
+			    local_pkg->versions.push_back({.name = m.name, .full_name = full_name_package, .description = m.description, .version_number = m.version_number, .dependencies = m.dependencies, .is_installed = true});
+			    packages.push_back(std::move(local_pkg));
+
+			    find_installed_pkg_from_available_packages(true);
+		    });
+	}
+
+	auto rom_path = std::filesystem::path(s_app_cache.game_folder_path) / "version.dll";
+	if (std::filesystem::exists(rom_path))
+	{
+		DWORD verHandle = 0;
+		UINT size       = 0;
+		LPBYTE lpBuffer = NULL;
+		DWORD verSize   = GetFileVersionInfoSize(rom_path.c_str(), &verHandle);
+
+		if (verSize != NULL)
+		{
+			std::vector<char> verData;
+			verData.reserve(verSize);
+
+			if (GetFileVersionInfo(rom_path.c_str(), verHandle, verSize, verData.data()))
+			{
+				if (VerQueryValue(verData.data(), L"\\", (VOID FAR * FAR*)&lpBuffer, &size))
+				{
+					if (size)
+					{
+						VS_FIXEDFILEINFO* verInfo = (VS_FIXEDFILEINFO*)lpBuffer;
+						if (verInfo->dwSignature == 0xfe'ef'04'bd)
+						{
+							const int major = (verInfo->dwFileVersionMS >> 16) & 0xff'ff;
+							const int minor = (verInfo->dwFileVersionMS >> 0) & 0xff'ff;
+							const int patch = (verInfo->dwFileVersionLS >> 16) & 0xff'ff;
+
+							const auto version_number = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
+							std::string full_name_package = "ReturnOfModding-ReturnOfModding";
+
+							std::unique_lock t_queue_lock(t_queue_mutex);
+							t_queue.push(
+							    [full_name_package, version_number]()
+							    {
+								    // std::unique_lock packages_lock(packages_mutex);
+								    for (auto& package : packages)
+								    {
+									    if (package->full_name == full_name_package)
+									    {
+										    size_t i = 0;
+										    for (auto& pkg_ver : package->versions)
+										    {
+											    if (pkg_ver.version_number == version_number)
+											    {
+												    installed_packages.push_back({.pkg               = package.get(),
+												                                  .pkg_version_index = i,
+												                                  .is_enabled        = true,
+												                                  .is_local          = false,
+												                                  .folder = s_app_cache.game_folder_path});
+
+												    bool has_enabled_entry = false;
+												    for (auto& enabled_state : s_app_cache.active_profile->package_enabled_states)
+												    {
+													    if (enabled_state.full_name == full_name_package)
+													    {
+														    has_enabled_entry = true;
+														    break;
+													    }
+												    }
+
+												    if (!has_enabled_entry)
+												    {
+													    s_app_cache.active_profile->package_enabled_states.push_back({.is_enabled = true, .full_name = full_name_package, .version = version_number});
+												    }
+
+												    package->is_installed             = true;
+												    package->installed_version_number = version_number;
+											    }
+
+											    i++;
+										    }
+									    }
+								    }
+							    });
+						}
+					}
+				}
+			}
+		}
+	}
+
+	s_app_cache.save();
+}
 
 void gui::render_available_mods_panel()
 {
@@ -225,12 +504,10 @@ void gui::render_available_mods_panel()
 			    auto session = cpr::Session();
 			    if (r.status_code == 200)
 			    {
-				    std::vector<ts::v1::package> packages_json = nlohmann::json::parse(r.text, nullptr, false, true);
-				    for (auto& package : packages_json)
-				    {
-					    packages.push_back(std::make_unique<ts::v1::package>(package));
-				    }
+				    packages_json = nlohmann::json::parse(r.text, nullptr, false, true);
+				    init_available_packages();
 
+				    // std::unique_lock packages_lock(packages_mutex);
 				    for (auto& el : packages)
 				    {
 					    std::filesystem::path icon_path  = std::getenv("appdata");
@@ -284,8 +561,32 @@ void gui::render_available_mods_panel()
 
 	if (available_packages_ready)
 	{
+		static std::string search_text_input;
+		if (ImGui::InputText("Search", &search_text_input))
+		{
+			search_text_input = imm::string::to_lower(search_text_input);
+		}
+
+		// std::unique_lock packages_lock(packages_mutex);
 		for (const auto& package : packages)
 		{
+			if (strlen(search_text_input.data()))
+			{
+				if (!package->full_name_lower.contains(search_text_input))
+				{
+					continue;
+				}
+			}
+
+			bool pushed_color_this_frame = false;
+			if (package->is_installed)
+			{
+				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 1.0f, 0.0f, 0.25f));
+				pushed_color_this_frame = true;
+			}
+
+			ImGui::BeginChild(package->name.c_str(), ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_FrameStyle);
+
 			ImGui::Image((void*)package->versions[0].icon_texture, ImVec2(256 / 2, 256 / 2));
 			ImGui::SameLine();
 			if (package->is_local)
@@ -298,16 +599,252 @@ void gui::render_available_mods_panel()
 			}
 			else
 			{
-				ImGui::TextWrapped(
-				    "Author: %s\n\nName: %s\n\nDescription: %s\n\nIs Latest Installed: %s\n\nLatest Version: %s",
-				    package->owner.c_str(),
-				    package->name.c_str(),
-				    package->versions[0].description.c_str(),
-				    package->is_latest_installed ? "Yes" : "No",
-				    package->versions[0].version_number.c_str());
+				ImGui::TextWrapped("Author: %s\n\nName: %s\n\nDescription: %s\n\nLatest Version: %s",
+				                   package->owner.c_str(),
+				                   package->name.c_str(),
+				                   package->versions[0].description.c_str(),
+				                   package->versions[0].version_number.c_str());
 			}
 
+			if (package->is_installed)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 0.0f, 0.0f, 0.75f));
+			}
+			else
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 1.0f, 0.0f, 0.75f));
+			}
+
+			if (ImGui::Button(package->is_installed ? std::format("Uninstall {}", package->installed_version_number).c_str() :
+			                                          std::format("Install {}", package->versions[0].version_number).c_str(),
+			                  ImVec2(200, 0)))
+			{
+				package->is_installed = !package->is_installed;
+
+				if (package->is_installed)
+				{
+					std::thread(
+					    [&]
+					    {
+						    auto session = cpr::Session();
+
+						    auto download_package_version = [&](const ts::v1::package_version& pkg_version) -> std::filesystem::path
+						    {
+							    std::filesystem::path zip_path  = std::getenv("appdata");
+							    zip_path                       /= "ImmediateModManager";
+							    zip_path                       /= "cache";
+							    zip_path                       /= "zips";
+
+							    if (!std::filesystem::exists(zip_path))
+							    {
+								    std::filesystem::create_directories(zip_path);
+							    }
+
+							    zip_path /= pkg_version.full_name;
+							    zip_path += ".zip";
+
+							    if (!std::filesystem::exists(zip_path))
+							    {
+								    auto ofstream = std::ofstream(zip_path, std::ios::app | std::ios::binary);
+								    session.SetUrl(cpr::Url{pkg_version.download_url});
+								    auto response = session.Download(ofstream);
+							    }
+
+							    return zip_path;
+						    };
+
+						    auto download_dep = [&](std::string dep) -> std::filesystem::path
+						    {
+							    // std::unique_lock packages_lock(packages_mutex);
+							    for (const auto& other_pkg : packages)
+							    {
+								    /*for (const auto& other_pkg_version : other_pkg->versions)
+								    {
+									    if (other_pkg_version.full_name == dep)
+									    {
+										    return download_package_version(other_pkg_version);
+									    }
+								    }*/
+
+								    for (const auto& other_pkg_version : other_pkg->versions)
+								    {
+									    if (other_pkg_version.full_name == dep)
+									    {
+										    // Download latest.
+										    return download_package_version(other_pkg->versions[0]);
+									    }
+								    }
+							    }
+
+							    return "";
+						    };
+
+						    auto handle_zip = [](std::filesystem::path zip_path)
+						    {
+							    const auto extracted_zip_folder_path = zip_path.parent_path() / zip_path.stem();
+							    if (std::filesystem::exists(zip_path))
+							    {
+								    if (zip_extract((char*)zip_path.u8string().c_str(),
+								                    (char*)extracted_zip_folder_path.u8string().c_str(),
+								                    nullptr,
+								                    nullptr)
+								        == 0)
+								    {
+									    const auto output_package_folder_name_splitted =
+									        imm::string::split((char*)zip_path.stem().u8string().c_str(), '-');
+									    const auto output_package_folder_name = output_package_folder_name_splitted[0] + '-' + output_package_folder_name_splitted[1];
+
+									    if (output_package_folder_name == "ReturnOfModding-ReturnOfModding")
+									    {
+										    for (const auto& entry : std::filesystem::recursive_directory_iterator(extracted_zip_folder_path, std::filesystem::directory_options::skip_permission_denied))
+										    {
+											    if (entry.path().filename() == "version.dll")
+											    {
+												    std::filesystem::copy(entry, std::filesystem::path(s_app_cache.game_folder_path) / "version.dll", std::filesystem::copy_options::overwrite_existing);
+											    }
+										    }
+									    }
+									    else
+									    {
+										    const auto rom_plugins_plugin_folder = std::filesystem::path(s_app_cache.rom_folder_path_utf8) / "plugins" / output_package_folder_name;
+										    if (!std::filesystem::exists(rom_plugins_plugin_folder))
+										    {
+											    std::filesystem::create_directories(rom_plugins_plugin_folder);
+										    }
+
+										    const auto rom_plugins_data_plugin_folder =
+										        std::filesystem::path(s_app_cache.rom_folder_path_utf8) / "plugins_data" / output_package_folder_name;
+										    if (!std::filesystem::exists(rom_plugins_data_plugin_folder))
+										    {
+											    std::filesystem::create_directories(rom_plugins_data_plugin_folder);
+										    }
+
+										    const auto rom_config_plugin_folder = std::filesystem::path(s_app_cache.rom_folder_path_utf8) / "config" / output_package_folder_name;
+										    if (!std::filesystem::exists(rom_plugins_data_plugin_folder))
+										    {
+											    std::filesystem::create_directories(rom_plugins_data_plugin_folder);
+										    }
+
+										    for (const auto& entry : std::filesystem::recursive_directory_iterator(extracted_zip_folder_path, std::filesystem::directory_options::skip_permission_denied))
+										    {
+											    std::cout << (char*)entry.path().u8string().c_str() << std::endl;
+
+											    if (entry.path().parent_path() == extracted_zip_folder_path && !entry.is_directory())
+											    {
+												    std::filesystem::copy(entry.path(),
+												                          rom_plugins_plugin_folder / entry.path().filename(),
+												                          std::filesystem::copy_options::overwrite_existing);
+
+												    continue;
+											    }
+
+											    if (entry.is_directory())
+											    {
+												    if (entry.path().filename() == "plugins")
+												    {
+													    std::filesystem::copy(entry.path(),
+													                          rom_plugins_plugin_folder / entry.path().filename(),
+													                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+
+													    continue;
+												    }
+												    else if (entry.path().filename() == "plugins_data")
+												    {
+													    std::filesystem::copy(entry.path(),
+													                          rom_plugins_data_plugin_folder
+													                              / entry.path().filename(),
+													                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+
+													    continue;
+												    }
+												    else if (entry.path().filename() == "config")
+												    {
+													    std::filesystem::copy(entry.path(),
+													                          rom_config_plugin_folder / entry.path().filename(),
+													                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+
+													    continue;
+												    }
+												    else
+												    {
+													    std::filesystem::copy(entry.path(),
+													                          rom_plugins_plugin_folder / entry.path().filename(),
+													                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+
+													    continue;
+												    }
+											    }
+										    }
+									    }
+								    }
+							    }
+						    };
+
+						    for (const auto& dep : package->versions[0].dependencies)
+						    {
+							    const auto zip_path = download_dep(dep);
+
+							    for (const auto& installed_package : installed_packages)
+							    {
+								    semver::version installed_vers(
+								        installed_package.pkg->versions[installed_package.pkg_version_index].version_number);
+								    if (installed_vers < semver::version(dep))
+								    {
+									    handle_zip(zip_path);
+								    }
+							    }
+						    }
+
+						    const auto zip_path = download_package_version(package->versions[0]);
+						    handle_zip(zip_path);
+
+						    on_game_folder_found();
+					    })
+					    .detach();
+				}
+				else
+				{
+					const auto rom_plugins_plugin_folder =
+					    std::filesystem::path(s_app_cache.rom_folder_path_utf8) / "plugins" / package->full_name;
+					if (std::filesystem::exists(rom_plugins_plugin_folder))
+					{
+						std::filesystem::remove_all(rom_plugins_plugin_folder);
+					}
+
+					std::thread(
+					    []()
+					    {
+						    on_game_folder_found();
+					    })
+					    .detach();
+				}
+			}
+
+			if (package->versions[0].dependencies.size())
+			{
+				if (ImGui::CollapsingHeader("Dependencies"))
+				{
+					for (const auto& dep : package->versions[0].dependencies)
+					{
+						ImGui::BulletText(dep.c_str());
+					}
+				}
+			}
+			else
+			{
+				ImGui::Text("No Dependencies");
+			}
+
+			ImGui::PopStyleColor();
+
 			ImGui::Separator();
+
+			ImGui::EndChild();
+
+			if (pushed_color_this_frame)
+			{
+				ImGui::PopStyleColor();
+			}
 		}
 	}
 
@@ -372,175 +909,11 @@ static process_running_info is_process_running(const std::wstring& process_name)
 	return {};
 }
 
-static void on_game_folder_found()
-{
-	if (!s_app_cache.active_profile)
-	{
-		if (!s_app_cache.profiles.size())
-		{
-			s_app_cache.profiles.push_back(std::make_shared<profile>());
-		}
-
-		for (const auto& prof : s_app_cache.profiles)
-		{
-			if (prof->name == s_app_cache.active_profile_name)
-			{
-				s_app_cache.active_profile = prof.get();
-				break;
-			}
-		}
-	}
-
-	const auto rom_folder = std::filesystem::path(s_app_cache.game_folder_path) / "ReturnOfModding";
-
-	const auto config_folder = rom_folder / "config";
-	if (!std::filesystem::exists(config_folder))
-	{
-		std::filesystem::create_directories(config_folder);
-	}
-
-	const auto plugins_data_folder = rom_folder / "plugins_data";
-	if (!std::filesystem::exists(plugins_data_folder))
-	{
-		std::filesystem::create_directories(plugins_data_folder);
-	}
-
-	const auto plugins_folder = rom_folder / "plugins";
-	if (!std::filesystem::exists(plugins_folder))
-	{
-		std::filesystem::create_directories(plugins_folder);
-	}
-	for (const auto& entry : std::filesystem::recursive_directory_iterator(plugins_folder, std::filesystem::directory_options::skip_permission_denied))
-	{
-		if (entry.is_directory())
-		{
-			continue;
-		}
-
-		if (entry.path().filename() != "manifest.json")
-		{
-			continue;
-		}
-
-		std::ifstream f(entry.path());
-		ts::v1::manifest m = nlohmann::json::parse(f, nullptr, false, true);
-
-		const auto pkg_folder = entry.path().parent_path();
-
-		m.author_name = (char*)pkg_folder.filename().u8string().c_str();
-		if (m.author_name.contains('-'))
-		{
-			m.author_name = imm::string::split(m.author_name, '-')[0];
-		}
-
-		const auto full_name_package = m.author_name + '-' + m.name;
-
-		bool is_enabled        = true;
-		bool has_enabled_entry = false;
-		for (const auto& enabled_state : s_app_cache.active_profile->package_enabled_states)
-		{
-			if (enabled_state.full_name == full_name_package)
-			{
-				is_enabled        = enabled_state.is_enabled;
-				has_enabled_entry = true;
-				break;
-			}
-		}
-
-		std::unique_lock t_queue_lock(t_queue_mutex);
-		t_queue.push(
-		    [full_name_package, m, pkg_folder, is_enabled, has_enabled_entry]
-		    {
-			    auto find_installed_pkg_from_available_packages = [&](bool is_local)
-			    {
-				    for (auto& package : packages)
-				    {
-					    if (package->full_name == full_name_package)
-					    {
-						    size_t i = 0;
-						    for (auto& pkg_ver : package->versions)
-						    {
-							    if (pkg_ver.version_number == m.version_number)
-							    {
-								    installed_packages.push_back({.pkg = package.get(), .pkg_version_index = i, .is_enabled = is_enabled, .is_local = is_local, .folder = pkg_folder});
-
-								    if (!has_enabled_entry)
-								    {
-									    s_app_cache.active_profile->package_enabled_states.push_back({.is_enabled = is_enabled, .full_name = full_name_package});
-								    }
-
-								    return true;
-							    }
-
-							    i++;
-						    }
-					    }
-				    }
-
-				    return false;
-			    };
-
-			    if (find_installed_pkg_from_available_packages(false))
-			    {
-				    return;
-			    }
-
-			    // Reaching here means it's just a local package
-
-			    auto local_pkg       = std::make_unique<ts::v1::package>();
-			    local_pkg->name      = m.name;
-			    local_pkg->full_name = full_name_package;
-			    local_pkg->owner     = m.author_name;
-			    local_pkg->is_local  = true;
-			    local_pkg->versions.push_back({.name = m.name, .full_name = full_name_package, .description = m.description, .version_number = m.version_number, .dependencies = m.dependencies, .is_installed = true});
-			    packages.push_back(std::move(local_pkg));
-
-			    find_installed_pkg_from_available_packages(true);
-		    });
-	}
-
-	auto rom_path = std::filesystem::path(s_app_cache.game_folder_path) / "version.dll";
-	if (std::filesystem::exists(rom_path))
-	{
-		DWORD verHandle = 0;
-		UINT size       = 0;
-		LPBYTE lpBuffer = NULL;
-		DWORD verSize   = GetFileVersionInfoSize(rom_path.c_str(), &verHandle);
-
-		if (verSize != NULL)
-		{
-			std::vector<char> verData;
-			verData.reserve(verSize);
-
-			if (GetFileVersionInfo(rom_path.c_str(), verHandle, verSize, verData.data()))
-			{
-				if (VerQueryValue(verData.data(), L"\\", (VOID FAR * FAR*)&lpBuffer, &size))
-				{
-					if (size)
-					{
-						VS_FIXEDFILEINFO* verInfo = (VS_FIXEDFILEINFO*)lpBuffer;
-						if (verInfo->dwSignature == 0xfe'ef'04'bd)
-						{
-							const int major = (verInfo->dwFileVersionMS >> 16) & 0xff'ff;
-							const int minor = (verInfo->dwFileVersionMS >> 0) & 0xff'ff;
-							const int patch = (verInfo->dwFileVersionLS >> 16) & 0xff'ff;
-
-							const auto version_number = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
-							std::string full_name_package = "ReturnOfModding-ReturnOfModding";
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
 void gui::render_installed_mods_panel()
 {
 	ImGui::Begin(installed_mods_title);
 
 	static bool need_to_init = true;
-	static std::filesystem::path app_cache_path;
 	if (need_to_init)
 	{
 		need_to_init = false;
@@ -596,9 +969,7 @@ void gui::render_installed_mods_panel()
 						    has_valid_game_folder_path = true;
 						    on_game_folder_found();
 
-						    std::ofstream app_cache_file_stream(app_cache_path);
-						    nlohmann::json j = s_app_cache;
-						    app_cache_file_stream << j << std::endl;
+						    s_app_cache.save();
 					    }
 				    }
 
@@ -619,18 +990,20 @@ void gui::render_installed_mods_panel()
 
 			    while (true)
 			    {
-				    std::unique_lock t_queue_lock(t_queue_mutex);
-				    while (t_queue.size())
 				    {
-					    auto& bla = t_queue.front();
+					    std::unique_lock t_queue_lock(t_queue_mutex);
+					    while (t_queue.size())
+					    {
+						    auto& bla = t_queue.front();
 
-					    bla();
+						    bla();
 
-					    t_queue.pop();
+						    t_queue.pop();
+					    }
 				    }
 
 				    using namespace std::chrono_literals;
-				    std::this_thread::sleep_for(1s);
+				    std::this_thread::sleep_for(250ms);
 			    }
 		    })
 		    .detach();
@@ -658,14 +1031,60 @@ void gui::render_installed_mods_panel()
 
 		ImGui::Separator();
 
+		ImGui::SetWindowFontScale(1.5f);
 		ImGui::TextWrapped("Installed Mods (%llu)", installed_packages.size());
+		ImGui::SetWindowFontScale(1.0f);
+
+		ImGui::Separator();
+
+		static std::string search_text_input;
+		if (ImGui::InputText("Search##installed_mods", &search_text_input))
+		{
+			search_text_input = imm::string::to_lower(search_text_input);
+		}
 
 		int i = 0;
 		for (auto& installed_package : installed_packages)
 		{
-			ImGui::Text("%s %s",
-			            installed_package.pkg->versions[installed_package.pkg_version_index].full_name.c_str(),
-			            installed_package.is_local ? "(Local Package)" : "");
+			if (strlen(search_text_input.data()))
+			{
+				if (!installed_package.pkg->versions[installed_package.pkg_version_index].full_name_lower.contains(search_text_input))
+				{
+					continue;
+				}
+			}
+
+			if (installed_package.is_enabled)
+			{
+				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 1.0f, 0.0f, 0.25f));
+			}
+			else
+			{
+				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 1.0f, 0.0f, 0.1f));
+			}
+
+			ImGui::BeginChild(installed_package.pkg->name.c_str(), ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_FrameStyle);
+
+			ImGui::Image((void*)installed_package.pkg->versions[installed_package.pkg_version_index].icon_texture, ImVec2(256 / 2, 256 / 2));
+			ImGui::SameLine();
+			if (installed_package.is_local)
+			{
+				ImGui::TextWrapped("Author: %s\n\nName: %s\n\nDescription: %s\n\nVersion: %s%s",
+				                   installed_package.pkg->owner.c_str(),
+				                   installed_package.pkg->name.c_str(),
+				                   installed_package.pkg->versions[installed_package.pkg_version_index].description.c_str(),
+				                   installed_package.pkg->versions[installed_package.pkg_version_index].version_number.c_str(),
+				                   installed_package.is_local ? "\n\n(Local Package)" : "");
+			}
+			else
+			{
+				ImGui::TextWrapped("Author: %s\n\nName: %s\n\nDescription: %s\n\nLatest Version: %s%s",
+				                   installed_package.pkg->owner.c_str(),
+				                   installed_package.pkg->name.c_str(),
+				                   installed_package.pkg->versions[installed_package.pkg_version_index].description.c_str(),
+				                   installed_package.pkg->versions[installed_package.pkg_version_index].version_number.c_str(),
+				                   installed_package.is_local ? "\n\n(Local Package)" : "");
+			}
 
 			if (installed_package.is_local)
 			{
@@ -677,9 +1096,30 @@ void gui::render_installed_mods_panel()
 
 			ImGui::PushID(i);
 
-			if (ImGui::Toggle("Is Enabled", &installed_package.is_enabled, ImGuiToggleFlags_Animated))
+			if (ImGui::Toggle(installed_package.is_enabled ? "Enabled" : "Disabled", &installed_package.is_enabled, ImGuiToggleFlags_Animated))
 			{
+				for (auto& enabled_state : s_app_cache.active_profile->package_enabled_states)
+				{
+					if (installed_package.pkg->full_name == enabled_state.full_name)
+					{
+						const auto manifest_file_path          = installed_package.folder / "manifest.json";
+						const auto manifest_disabled_file_path = installed_package.folder / "manifest_disabled.json";
+						if (std::filesystem::exists(manifest_file_path) && !std::filesystem::exists(manifest_disabled_file_path))
+						{
+							std::filesystem::rename(manifest_file_path, manifest_disabled_file_path);
 						}
+						else if (std::filesystem::exists(manifest_disabled_file_path) && !std::filesystem::exists(manifest_file_path))
+						{
+							std::filesystem::rename(manifest_disabled_file_path, manifest_file_path);
+						}
+
+						enabled_state.is_enabled = installed_package.is_enabled;
+						s_app_cache.save();
+
+						break;
+					}
+				}
+			}
 
 			if (ImGui::Button("Open Folder"))
 			{
@@ -688,6 +1128,10 @@ void gui::render_installed_mods_panel()
 			ImGui::PopID();
 
 			ImGui::Separator();
+
+			ImGui::EndChild();
+
+			ImGui::PopStyleColor();
 
 			i++;
 		}
@@ -703,6 +1147,11 @@ void gui::render_installed_mods_panel()
 
 void gui::render()
 {
+	static bool id_stack_open = true;
+	ImGui::ShowIDStackToolWindow(&id_stack_open);
+
+	ImGui::ShowStyleEditor();
+
 	if (m_show_demo_window)
 	{
 		ImGui::ShowDemoWindow(&m_show_demo_window);
