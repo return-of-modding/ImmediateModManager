@@ -203,7 +203,7 @@ bool LoadTextureFromFile(FILE* f, ID3D11ShaderResourceView** out_srv, int* out_w
 }
 
 static auto available_packages_ready = false;
-// static std::mutex packages_mutex;
+static std::mutex packages_mutex;
 static std::vector<std::unique_ptr<ts::v1::package>> packages;
 
 static auto has_valid_game_folder_path = false;
@@ -246,7 +246,7 @@ static void on_game_folder_found()
 	{
 		installed_packages.clear();
 		std::unordered_map<std::string, ID3D11ShaderResourceView*> full_name_to_tex;
-		// std::unique_lock packages_lock(packages_mutex);
+		std::unique_lock packages_lock(packages_mutex);
 		for (const auto& pkg : packages)
 		{
 			for (const auto& pkg_version : pkg->versions)
@@ -353,7 +353,7 @@ static void on_game_folder_found()
 		    {
 			    auto find_installed_pkg_from_available_packages = [&](bool is_local)
 			    {
-				    // std::unique_lock packages_lock(packages_mutex);
+				    std::unique_lock packages_lock(packages_mutex);
 				    for (auto& package : packages)
 				    {
 					    if (package->full_name == full_name_package)
@@ -438,7 +438,7 @@ static void on_game_folder_found()
 							t_queue.push(
 							    [full_name_package, version_number]()
 							    {
-								    // std::unique_lock packages_lock(packages_mutex);
+								    std::unique_lock packages_lock(packages_mutex);
 								    for (auto& package : packages)
 								    {
 									    if (package->full_name == full_name_package)
@@ -507,7 +507,7 @@ void gui::render_available_mods_panel()
 				    packages_json = nlohmann::json::parse(r.text, nullptr, false, true);
 				    init_available_packages();
 
-				    // std::unique_lock packages_lock(packages_mutex);
+				    std::unique_lock packages_lock(packages_mutex);
 				    for (auto& el : packages)
 				    {
 					    std::filesystem::path icon_path  = std::getenv("appdata");
@@ -567,7 +567,7 @@ void gui::render_available_mods_panel()
 			search_text_input = imm::string::to_lower(search_text_input);
 		}
 
-		// std::unique_lock packages_lock(packages_mutex);
+		std::unique_lock packages_lock(packages_mutex);
 		for (const auto& package : packages)
 		{
 			if (strlen(search_text_input.data()))
@@ -655,7 +655,7 @@ void gui::render_available_mods_panel()
 
 						    auto download_dep = [&](std::string dep) -> std::filesystem::path
 						    {
-							    // std::unique_lock packages_lock(packages_mutex);
+							    std::unique_lock packages_lock(packages_mutex);
 							    for (const auto& other_pkg : packages)
 							    {
 								    /*for (const auto& other_pkg_version : other_pkg->versions)
@@ -786,9 +786,11 @@ void gui::render_available_mods_panel()
 
 							    for (const auto& installed_package : installed_packages)
 							    {
+								    const auto dep_split   = imm::string::split(dep, '-');
+								    const auto dep_version = dep_split[2];
 								    semver::version installed_vers(
 								        installed_package.pkg->versions[installed_package.pkg_version_index].version_number);
-								    if (installed_vers < semver::version(dep))
+								    if (installed_vers < semver::version(dep_version))
 								    {
 									    handle_zip(zip_path);
 								    }
@@ -1147,15 +1149,15 @@ void gui::render_installed_mods_panel()
 
 void gui::render()
 {
-	static bool id_stack_open = true;
-	ImGui::ShowIDStackToolWindow(&id_stack_open);
+	// static bool id_stack_open = true;
+	// ImGui::ShowIDStackToolWindow(&id_stack_open);
 
-	ImGui::ShowStyleEditor();
+	// ImGui::ShowStyleEditor();
 
-	if (m_show_demo_window)
-	{
-		ImGui::ShowDemoWindow(&m_show_demo_window);
-	}
+	// if (m_show_demo_window)
+	// {
+	// 	ImGui::ShowDemoWindow(&m_show_demo_window);
+	// }
 
 	render_docking_layout();
 
