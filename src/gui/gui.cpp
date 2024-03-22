@@ -23,6 +23,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+static ImU32 DEPRECATED_COLOR    = IM_COL32(235, 125, 52, 255);
+static ImU32 DEPRECATED_COLOR_BG = IM_COL32(255, 50, 25, 125);
+
 struct package_enabled_state
 {
 	bool is_enabled = true;
@@ -134,6 +137,11 @@ void gui::render_main_menu_bar()
 {
 	if (ImGui::BeginMainMenuBar())
 	{
+		// if (ImGui::Button("Crash it"))
+		// {
+		// 	*(int*)0xDE'AD = 0;
+		// }
+
 		if (s_app_cache.game_exe_path.size())
 		{
 			if (ImGui::Button("Launch Game"))
@@ -217,6 +225,7 @@ struct installed_package
 	std::filesystem::path folder;
 };
 
+static std::mutex installed_packages_mutex;
 static std::vector<installed_package> installed_packages;
 static std::vector<ts::v1::package> packages_json;
 static std::mutex t_queue_mutex;
@@ -234,7 +243,7 @@ static void init_available_packages()
 		}
 		for (auto& pkg_version : package.versions)
 		{
-			pkg_version.full_name_lower = imm::string::to_lower(package.full_name);
+			pkg_version.full_name_lower = imm::string::to_lower(pkg_version.full_name);
 		}
 		packages.push_back(std::make_unique<ts::v1::package>(package));
 	}
@@ -244,6 +253,7 @@ static void on_game_folder_found()
 {
 	if (installed_packages.size())
 	{
+		std::unique_lock installed_packages_lock(installed_packages_mutex);
 		installed_packages.clear();
 		std::unordered_map<std::string, ID3D11ShaderResourceView*> full_name_to_tex;
 		std::unique_lock packages_lock(packages_mutex);
@@ -363,6 +373,7 @@ static void on_game_folder_found()
 						    {
 							    if (pkg_ver.version_number == m.version_number)
 							    {
+								    std::unique_lock installed_packages_lock(installed_packages_mutex);
 								    installed_packages.push_back({.pkg = package.get(), .pkg_version_index = i, .is_enabled = is_enabled, .is_local = is_local, .folder = pkg_folder});
 
 								    if (!has_enabled_entry)
@@ -394,11 +405,14 @@ static void on_game_folder_found()
 			    auto local_pkg                      = std::make_unique<ts::v1::package>();
 			    local_pkg->name                     = m.name;
 			    local_pkg->full_name                = full_name_package;
+			    local_pkg->full_name_lower          = imm::string::to_lower(full_name_package);
 			    local_pkg->owner                    = m.author_name;
 			    local_pkg->is_local                 = true;
 			    local_pkg->is_installed             = true;
 			    local_pkg->installed_version_number = m.version_number;
-			    local_pkg->versions.push_back({.name = m.name, .full_name = full_name_package, .description = m.description, .version_number = m.version_number, .dependencies = m.dependencies, .is_installed = true});
+
+			    auto full_name_version = full_name_package + '-' + m.version_number;
+			    local_pkg->versions.push_back({.name = m.name, .full_name = full_name_version, .description = m.description, .version_number = m.version_number, .dependencies = m.dependencies, .is_installed = true, .full_name_lower = imm::string::to_lower(full_name_version)});
 			    packages.push_back(std::move(local_pkg));
 
 			    find_installed_pkg_from_available_packages(true);
@@ -448,6 +462,7 @@ static void on_game_folder_found()
 										    {
 											    if (pkg_ver.version_number == version_number)
 											    {
+												    std::unique_lock installed_packages_lock(installed_packages_mutex);
 												    installed_packages.push_back({.pkg               = package.get(),
 												                                  .pkg_version_index = i,
 												                                  .is_enabled        = true,
@@ -486,6 +501,22 @@ static void on_game_folder_found()
 	}
 
 	s_app_cache.save();
+}
+
+static void uninstall(ts::v1::package* package)
+{
+	const auto rom_plugins_plugin_folder = std::filesystem::path(s_app_cache.rom_folder_path_utf8) / "plugins" / package->full_name;
+	if (std::filesystem::exists(rom_plugins_plugin_folder))
+	{
+		std::filesystem::remove_all(rom_plugins_plugin_folder);
+	}
+
+	std::thread(
+	    []()
+	    {
+		    on_game_folder_found();
+	    })
+	    .detach();
 }
 
 void gui::render_available_mods_panel()
@@ -561,15 +592,92 @@ void gui::render_available_mods_panel()
 
 	if (available_packages_ready)
 	{
+		ImGui::SeparatorText("Search & Sort");
+
 		static std::string search_text_input;
-		if (ImGui::InputText("Search", &search_text_input))
+		if (ImGui::InputText("Search##available_mods", &search_text_input))
 		{
 			search_text_input = imm::string::to_lower(search_text_input);
 		}
 
+		if (ImGui::Button("A to Z"))
+		{
+			std::sort(packages.begin(),
+			          packages.end(),
+			          [](std::unique_ptr<ts::v1::package>& a, std::unique_ptr<ts::v1::package>& b)
+			          {
+				          return a->full_name < b->full_name;
+			          });
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Z to A"))
+		{
+			std::sort(packages.begin(),
+			          packages.end(),
+			          [](std::unique_ptr<ts::v1::package>& a, std::unique_ptr<ts::v1::package>& b)
+			          {
+				          return a->full_name > b->full_name;
+			          });
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Last Updated"))
+		{
+			std::sort(packages.begin(),
+			          packages.end(),
+			          [](std::unique_ptr<ts::v1::package>& a, std::unique_ptr<ts::v1::package>& b)
+			          {
+				          return a->date_updated > b->date_updated;
+			          });
+		}
+
+		static bool show_modpacks      = false;
+		static bool show_only_modpacks = false;
+		ImGui::Checkbox("Show Modpacks", &show_modpacks);
+		ImGui::SameLine();
+		static bool show_deprecated = true;
+		ImGui::Checkbox("Show Deprecated", &show_deprecated);
+		if (show_modpacks)
+		{
+			ImGui::Checkbox("Show Only Modpacks", &show_only_modpacks);
+		}
+
+		ImGui::SeparatorText(std::format("Available Mods ({})", packages.size()).c_str());
+
+		// ImGui::BeginChild("Available Mods", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_FrameStyle);
+		ImGui::BeginChild("Available Mods");
 		std::unique_lock packages_lock(packages_mutex);
 		for (const auto& package : packages)
 		{
+			bool is_modpack = false;
+			for (const auto& categ : package->categories)
+			{
+				if (categ == "Modpacks")
+				{
+					is_modpack = true;
+					break;
+				}
+			}
+
+			if (!show_modpacks)
+			{
+				if (is_modpack)
+				{
+					continue;
+				}
+			}
+			else if (show_only_modpacks && !is_modpack)
+			{
+				continue;
+			}
+
+			if (!show_deprecated)
+			{
+				if (package->is_deprecated)
+				{
+					continue;
+				}
+			}
+
 			if (strlen(search_text_input.data()))
 			{
 				if (!package->full_name_lower.contains(search_text_input))
@@ -579,7 +687,12 @@ void gui::render_available_mods_panel()
 			}
 
 			bool pushed_color_this_frame = false;
-			if (package->is_installed)
+			if (package->is_deprecated)
+			{
+				ImGui::PushStyleColor(ImGuiCol_FrameBg, DEPRECATED_COLOR_BG);
+				pushed_color_this_frame = true;
+			}
+			else if (package->is_installed)
 			{
 				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 1.0f, 0.0f, 0.25f));
 				pushed_color_this_frame = true;
@@ -604,6 +717,10 @@ void gui::render_available_mods_panel()
 				                   package->name.c_str(),
 				                   package->versions[0].description.c_str(),
 				                   package->versions[0].version_number.c_str());
+			}
+			if (package->is_deprecated)
+			{
+				ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(DEPRECATED_COLOR), "Deprecated");
 			}
 
 			if (package->is_installed)
@@ -756,7 +873,7 @@ void gui::render_available_mods_panel()
 												    {
 													    continue;
 												    }
-													already_copied_directories.push_back(entry.path());
+												    already_copied_directories.push_back(entry.path());
 
 												    if (entry.path().filename() == "plugins")
 												    {
@@ -794,6 +911,7 @@ void gui::render_available_mods_panel()
 						    {
 							    const auto zip_path = download_dep(dep);
 
+							    std::unique_lock installed_packages_lock(installed_packages_mutex);
 							    for (const auto& installed_package : installed_packages)
 							    {
 								    const auto dep_split   = imm::string::split(dep, '-');
@@ -816,19 +934,7 @@ void gui::render_available_mods_panel()
 				}
 				else
 				{
-					const auto rom_plugins_plugin_folder =
-					    std::filesystem::path(s_app_cache.rom_folder_path_utf8) / "plugins" / package->full_name;
-					if (std::filesystem::exists(rom_plugins_plugin_folder))
-					{
-						std::filesystem::remove_all(rom_plugins_plugin_folder);
-					}
-
-					std::thread(
-					    []()
-					    {
-						    on_game_folder_found();
-					    })
-					    .detach();
+					uninstall(package.get());
 				}
 			}
 
@@ -858,6 +964,7 @@ void gui::render_available_mods_panel()
 				ImGui::PopStyleColor();
 			}
 		}
+		ImGui::EndChild();
 	}
 
 	ImGui::End();
@@ -1023,6 +1130,7 @@ void gui::render_installed_mods_panel()
 
 	if (has_valid_game_folder_path)
 	{
+		ImGui::SeparatorText("Folders");
 		ImGui::TextWrapped("Game Folder");
 		ImGui::SameLine();
 		if (ImGui::Button("Open##game_folder"))
@@ -1041,21 +1149,82 @@ void gui::render_installed_mods_panel()
 		}
 		ImGui::TextWrapped(s_app_cache.rom_folder_path_utf8.c_str());
 
-		ImGui::Separator();
+		ImGui::SeparatorText("Share Profile");
+		if (ImGui::Button("Create rorr_mod_list.txt File"))
+		{
+			std::filesystem::path file_path = std::filesystem::absolute("./rorr_mod_list.txt");
+			if (std::filesystem::exists(file_path))
+			{
+				std::filesystem::remove_all(file_path);
+			}
+			std::ofstream o(file_path, std::ios::out | std::ios::binary);
 
-		ImGui::SetWindowFontScale(1.5f);
-		ImGui::TextWrapped("Installed Mods (%llu)", installed_packages.size());
-		ImGui::SetWindowFontScale(1.0f);
+			if (!o.is_open())
+			{
+				std::wstring error_msg = L"Error opening file for writing: " + file_path.wstring();
+				MessageBox(0, error_msg.c_str(), L"IMM", 0);
+				return;
+			}
 
-		ImGui::Separator();
+			bool has_any_local_mod = false;
+			std::unique_lock installed_packages_lock(installed_packages_mutex);
+			for (const auto& installed_pkg : installed_packages)
+			{
+				if (installed_pkg.is_local)
+				{
+					has_any_local_mod = true;
+				}
+
+				o << installed_pkg.pkg->versions[installed_pkg.pkg_version_index].full_name << '\n';
+			}
+
+			o.close();
+
+			if (has_any_local_mod)
+			{
+				std::wstring error_msg = L"Profile contains local mods, those mods can't be properly shared currently.";
+				MessageBox(0, error_msg.c_str(), L"IMM", 0);
+			}
+
+			std::wstring param = std::wstring(L"/select, ") + file_path.c_str();
+			ShellExecuteW(NULL, NULL, L"explorer.exe", param.c_str(), NULL, SW_NORMAL);
+		}
+
+		ImGui::SeparatorText("Search & Sort");
 
 		static std::string search_text_input;
 		if (ImGui::InputText("Search##installed_mods", &search_text_input))
 		{
 			search_text_input = imm::string::to_lower(search_text_input);
 		}
+		if (ImGui::Button("A to Z"))
+		{
+			std::unique_lock installed_packages_lock(installed_packages_mutex);
+			std::sort(installed_packages.begin(),
+			          installed_packages.end(),
+			          [](installed_package& a, installed_package& b)
+			          {
+				          return a.pkg->full_name < b.pkg->full_name;
+			          });
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Z to A"))
+		{
+			std::unique_lock installed_packages_lock(installed_packages_mutex);
+			std::sort(installed_packages.begin(),
+			          installed_packages.end(),
+			          [](installed_package& a, installed_package& b)
+			          {
+				          //   std::cout << "A: " << a.pkg->full_name << " (res:" << (a.pkg->full_name > b.pkg->full_name)
+				          //             << ") B: " << b.pkg->full_name << std::endl;
+				          return a.pkg->full_name > b.pkg->full_name;
+			          });
+		}
+
+		ImGui::SeparatorText(std::format("Installed Mods ({})", installed_packages.size()).c_str());
 
 		int i = 0;
+		std::unique_lock installed_packages_lock(installed_packages_mutex);
 		for (auto& installed_package : installed_packages)
 		{
 			if (strlen(search_text_input.data()))
@@ -1069,6 +1238,10 @@ void gui::render_installed_mods_panel()
 			if (installed_package.is_enabled)
 			{
 				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 1.0f, 0.0f, 0.25f));
+			}
+			else if (installed_package.pkg->is_deprecated)
+			{
+				ImGui::PushStyleColor(ImGuiCol_FrameBg, DEPRECATED_COLOR_BG);
 			}
 			else
 			{
@@ -1137,6 +1310,16 @@ void gui::render_installed_mods_panel()
 			{
 				ShellExecuteW(NULL, NULL, L"explorer.exe", installed_package.folder.c_str(), NULL, SW_NORMAL);
 			}
+			if (installed_package.pkg->is_installed)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1.0f, 0.0f, 0.0f, 0.75f));
+				if (ImGui::Button(std::format("Uninstall {}", installed_package.pkg->installed_version_number).c_str(), ImVec2(200, 0)))
+				{
+					uninstall(installed_package.pkg);
+				}
+				ImGui::PopStyleColor();
+			}
+
 			ImGui::PopID();
 
 			ImGui::Separator();
