@@ -11,6 +11,7 @@
 #include "imgui_impl/dx11.h"
 #include "imgui_impl/win32.h"
 
+#include <client/windows/handler/exception_handler.h>
 #include <d3d11.h>
 #include <filesystem>
 #include <locale.h>
@@ -29,9 +30,17 @@ void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+static bool FilterCallback(void*, EXCEPTION_POINTERS*, MDRawAssertionInfo*)
+{
+	// Don't spam breakpad if we're debugging
+	return !IsDebuggerPresent();
+}
+
 // Main code
 int main(int, char**)
 {
+	auto handler = google_breakpad::ExceptionHandler(L"./", FilterCallback, nullptr, nullptr, google_breakpad::ExceptionHandler::HANDLER_ALL, MINIDUMP_TYPE(MiniDumpNormal), (const wchar_t*)nullptr, (const google_breakpad::CustomClientInfo*)nullptr);
+
 	setlocale(LC_ALL, ".utf8");
 
 	// Create application window

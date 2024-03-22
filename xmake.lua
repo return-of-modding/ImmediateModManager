@@ -51,6 +51,8 @@ add_requires("stb")
 
 add_requires("kuba-zip")
 
+add_requires("breakpad")
+
 add_requires("imgui v1.90.4-docking", { configs = { wchar32 = true, freetype = true } })
 
 target("ImmediateModManager")
@@ -61,4 +63,4 @@ target("ImmediateModManager")
     add_headerfiles("src/**.h", "src/**.hpp")
     add_includedirs("src/")
     add_syslinks("User32", "Shell32", "Version", "d3d11", "dxgi")
-    add_packages("nlohmann_json", "semver", "imgui", "cpr", "stb", "kuba-zip")
+    add_packages("nlohmann_json", "semver", "imgui", "cpr", "stb", "kuba-zip", "breakpad")
