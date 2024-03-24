@@ -9,24 +9,24 @@ add_rules("c.unity_build")
 add_cxflags("/bigobj", "/MP", "/EHsc")
 add_defines("UNICODE", "_UNICODE", "_CRT_SECURE_NO_WARNINGS")
 
-local vsRuntime = "MD"
+local vsRuntime = ""
 
 if is_mode("debug") then
-    add_defines("CET_DEBUG")
+    add_defines("DEBUG")
     set_symbols("debug")
     set_optimize("none")
     set_warnings("all")
     set_policy("build.optimization.lto", false)
 
-    vsRuntime = vsRuntime.."d"
+    vsRuntime = "MTd"
 elseif is_mode("releasedbg") then
-    add_defines("CET_DEBUG")
+    add_defines("DEBUG")
     set_symbols("debug")
     set_optimize("fastest")
     set_warnings("all")
     set_policy("build.optimization.lto", true)
 
-    vsRuntime = vsRuntime.."d"
+    vsRuntime = "MTd"
 elseif is_mode("release") then
     add_defines("NDEBUG")
     set_symbols("hidden")
@@ -35,6 +35,8 @@ elseif is_mode("release") then
     set_runtimes("MD")
     set_warnings("all", "error")
     set_policy("build.optimization.lto", true)
+
+    vsRuntime = "MT"
 end
 
 set_runtimes(vsRuntime);
