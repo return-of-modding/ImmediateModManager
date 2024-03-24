@@ -90,15 +90,17 @@ int main(int, char**)
 		style.Colors[ImGuiCol_WindowBg].w = 1.0f;
 	}
 
-	auto font_path = "./assets/fonts/Comfortaa-Medium.ttf";
+	auto font_path = "./assets/fonts/Karla-Regular.ttf";
 	if (!std::filesystem::exists(font_path))
 	{
-		font_path = "../../../../assets/fonts/Comfortaa-Medium.ttf";
+		font_path = "../../../../assets/fonts/Karla-Regular.ttf";
 	}
 	if (std::filesystem::exists(font_path))
 	{
-		auto custom_font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path, 16);
+		auto custom_font = ImGui::GetIO().Fonts->AddFontFromFileTTF(font_path, 18);
 	}
+
+	ImGui::StyleColorsDark();
 
 	// Setup Platform/Renderer backends
 	ImGui_ImplWin32_Init(hwnd);
@@ -123,7 +125,7 @@ int main(int, char**)
 	// Our state
 	bool show_demo_window    = true;
 	bool show_another_window = false;
-	ImVec4 clear_color       = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+	ImVec4 clear_color       = ImVec4(0, 0, 0, 1.00f);
 
 	// Main loop
 	bool done = false;
