@@ -1032,7 +1032,7 @@ void gui::render_installed_mods_panel()
 	{
 		need_to_init = false;
 
-		app_cache_path  = std::getenv("appdata");
+		app_cache_path  = _wgetenv(L"appdata");
 		app_cache_path /= "ImmediateModManager";
 		app_cache_path /= "cache";
 		if (!std::filesystem::exists(app_cache_path))

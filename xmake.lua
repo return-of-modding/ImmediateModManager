@@ -6,7 +6,7 @@ set_arch("x64")
 add_rules("mode.debug","mode.releasedbg", "mode.release")
 add_rules("c.unity_build")
 
-add_cxflags("/bigobj", "/MP", "/EHsc")
+add_cxflags("/bigobj", "/MP", "/EHsc", "/utf-8")
 add_defines("UNICODE", "_UNICODE", "_CRT_SECURE_NO_WARNINGS")
 
 local vsRuntime = ""
