@@ -12,6 +12,7 @@
 #include "imgui_impl/win32.h"
 
 #include <client/windows/handler/exception_handler.h>
+#include <csignal>
 #include <d3d11.h>
 #include <filesystem>
 #include <locale.h>
@@ -36,12 +37,29 @@ static bool FilterCallback(void*, EXCEPTION_POINTERS*, MDRawAssertionInfo*)
 	return !IsDebuggerPresent();
 }
 
+void SignalHandler(int signal)
+{
+	if (signal == SIGABRT)
+	{
+		*(int*)0xDE'AD = 0;
+	}
+	else
+	{
+		// ...
+	}
+}
+
 // Main code
 int main(int, char**)
 {
+	setlocale(LC_ALL, ".utf8");
+
 	auto handler = google_breakpad::ExceptionHandler(L"./", FilterCallback, nullptr, nullptr, google_breakpad::ExceptionHandler::HANDLER_ALL, MINIDUMP_TYPE(MiniDumpNormal), (const wchar_t*)nullptr, (const google_breakpad::CustomClientInfo*)nullptr);
 
-	setlocale(LC_ALL, ".utf8");
+	_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+	typedef void (*SignalHandlerPointer)(int);
+	SignalHandlerPointer previousHandler;
+	previousHandler = signal(SIGABRT, SignalHandler);
 
 	// Create application window
 	//ImGui_ImplWin32_EnableDpiAwareness();

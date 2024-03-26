@@ -141,10 +141,10 @@ void gui::render_main_menu_bar()
 
 	// if (ImGui::BeginMainMenuBar())
 	// {
-	// 	if (ImGui::Button("Crash it"))
-	// 	{
-	// 		*(int*)0xDE'AD = 0;
-	// 	}
+	// if (ImGui::Button("Crash it"))
+	// {
+	// 	*(int*)0xDE'AD = 0;
+	// }
 
 	// 	ImGui::EndMainMenuBar();
 	// }
