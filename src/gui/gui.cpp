@@ -23,6 +23,29 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+static std::filesystem::path _root_cache_folder = "";
+
+std::filesystem::path get_root_cache_folder()
+{
+	if (_root_cache_folder == "")
+	{
+		const auto testin = _wgetenv(L"appdata");
+		if (testin)
+		{
+			_root_cache_folder  = testin;
+			_root_cache_folder /= "ImmediateModManager";
+			_root_cache_folder /= "cache";
+		}
+		else
+		{
+			_root_cache_folder  = "./ImmediateModManager";
+			_root_cache_folder /= "cache";
+		}
+	}
+
+	return _root_cache_folder;
+}
+
 static ImU32 DEPRECATED_COLOR    = IM_COL32(235, 125, 52, 255);
 static ImU32 DEPRECATED_COLOR_BG = IM_COL32(255, 50, 25, 125);
 
@@ -531,9 +554,7 @@ void gui::render_available_mods_panel()
 				    std::unique_lock packages_lock(packages_mutex);
 				    for (auto& el : packages)
 				    {
-					    std::filesystem::path icon_path  = std::getenv("appdata");
-					    icon_path                       /= "ImmediateModManager";
-					    icon_path                       /= "cache";
+					    std::filesystem::path icon_path  = get_root_cache_folder();
 					    icon_path                       /= "icons";
 
 					    if (!std::filesystem::exists(icon_path))
@@ -737,9 +758,7 @@ void gui::render_available_mods_panel()
 
 						    auto download_package_version = [&](const ts::v1::package_version& pkg_version) -> std::filesystem::path
 						    {
-							    std::filesystem::path zip_path  = std::getenv("appdata");
-							    zip_path                       /= "ImmediateModManager";
-							    zip_path                       /= "cache";
+							    std::filesystem::path zip_path  = get_root_cache_folder();
 							    zip_path                       /= "zips";
 
 							    if (!std::filesystem::exists(zip_path))
@@ -1032,9 +1051,7 @@ void gui::render_installed_mods_panel()
 	{
 		need_to_init = false;
 
-		app_cache_path  = _wgetenv(L"appdata");
-		app_cache_path /= "ImmediateModManager";
-		app_cache_path /= "cache";
+		app_cache_path = get_root_cache_folder();
 		if (!std::filesystem::exists(app_cache_path))
 		{
 			std::filesystem::create_directories(app_cache_path);

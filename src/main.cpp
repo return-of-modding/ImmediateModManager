@@ -49,7 +49,6 @@ void SignalHandler(int signal)
 	}
 }
 
-// Main code
 int main(int, char**)
 {
 	setlocale(LC_ALL, ".utf8");
