@@ -49,6 +49,15 @@ void SignalHandler(int signal)
 	}
 }
 
+static RECT center_window(HWND parent_window, int width, int height)
+{
+	RECT rect;
+	GetClientRect(parent_window, &rect);
+	rect.left = (rect.right / 2) - (width / 2);
+	rect.top  = (rect.bottom / 2) - (height / 2);
+	return rect;
+}
+
 int main(int, char**)
 {
 	setlocale(LC_ALL, ".utf8");
@@ -64,7 +73,20 @@ int main(int, char**)
 	//ImGui_ImplWin32_EnableDpiAwareness();
 	WNDCLASSEXW wc = {sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, gui::window_title_wide, nullptr};
 	::RegisterClassExW(&wc);
-	HWND hwnd = ::CreateWindowW(wc.lpszClassName, gui::window_title_wide, WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
+	constexpr int default_window_width  = 1280;
+	constexpr int default_window_height = 720;
+	auto rect_window_info = center_window(GetDesktopWindow(), default_window_width, default_window_height);
+	HWND hwnd             = ::CreateWindowW(wc.lpszClassName,
+                                gui::window_title_wide,
+                                WS_OVERLAPPEDWINDOW,
+                                rect_window_info.left,
+                                rect_window_info.top,
+                                default_window_width,
+                                default_window_height,
+                                nullptr,
+                                nullptr,
+                                wc.hInstance,
+                                nullptr);
 
 	// Initialize Direct3D
 	if (!CreateDeviceD3D(hwnd))
@@ -84,12 +106,12 @@ int main(int, char**)
 	ImGuiIO& io = ImGui::GetIO();
 	(void)io;
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
-	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  // Enable Gamepad Controls
-	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;     // Enable Docking
-	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;   // Enable Multi-Viewport / Platform Windows
+	// io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  // Enable Gamepad Controls
+	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;   // Enable Docking
+	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport / Platform Windows
 	//io.ConfigViewportsNoAutoMerge = true;
 	//io.ConfigViewportsNoTaskBarIcon = true;
-	//io.ConfigViewportsNoDefaultParent = true;
+	// io.ConfigViewportsNoDefaultParent = true;
 	//io.ConfigDockingAlwaysTabBar = true;
 	//io.ConfigDockingTransparentPayload = true;
 	//io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;     // FIXME-DPI: Experimental. THIS CURRENTLY DOESN'T WORK AS EXPECTED. DON'T USE IN USER APP!
