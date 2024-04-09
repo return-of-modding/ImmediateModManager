@@ -10,11 +10,13 @@
 #include "imgui.h"
 #include "imgui_impl/dx11.h"
 #include "imgui_impl/win32.h"
+#include "logger.hpp"
 
 #include <client/windows/handler/exception_handler.h>
 #include <csignal>
 #include <d3d11.h>
 #include <filesystem>
+#include <iostream>
 #include <locale.h>
 #include <tchar.h>
 
@@ -62,6 +64,10 @@ int main(int, char**)
 {
 	setlocale(LC_ALL, ".utf8");
 
+	init_logger();
+
+	SPDLOG_LOGGER_INFO(logger, L"Current Path: {}", std::filesystem::current_path().wstring());
+
 	auto handler = google_breakpad::ExceptionHandler(L"./", FilterCallback, nullptr, nullptr, google_breakpad::ExceptionHandler::HANDLER_ALL, MINIDUMP_TYPE(MiniDumpNormal), (const wchar_t*)nullptr, (const google_breakpad::CustomClientInfo*)nullptr);
 
 	_set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
@@ -102,13 +108,19 @@ int main(int, char**)
 
 	// Setup Dear ImGui context
 	IMGUI_CHECKVERSION();
+
 	ImGui::CreateContext();
+
 	ImGuiIO& io = ImGui::GetIO();
-	(void)io;
+
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
-	// io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  // Enable Gamepad Controls
+
+	io.ConfigFlags  &= ~ImGuiConfigFlags_NavEnableGamepad;
+	io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;   // Enable Docking
 	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport / Platform Windows
+
 	//io.ConfigViewportsNoAutoMerge = true;
 	//io.ConfigViewportsNoTaskBarIcon = true;
 	// io.ConfigViewportsNoDefaultParent = true;

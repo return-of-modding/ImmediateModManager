@@ -1,5 +1,7 @@
 #include "gui.hpp"
 
+#include "logger.hpp"
+
 #include <codecvt>
 #include <cpr/cpr.h>
 #include <d3d11.h>
@@ -29,18 +31,22 @@ std::filesystem::path get_root_cache_folder()
 {
 	if (_root_cache_folder == "")
 	{
-		const auto testin = _wgetenv(L"appdata");
-		if (testin)
+		const auto appdata_folder = _wgetenv(L"appdata");
+		if (appdata_folder)
 		{
-			_root_cache_folder  = testin;
+			_root_cache_folder  = appdata_folder;
 			_root_cache_folder /= "ImmediateModManager";
 			_root_cache_folder /= "cache";
 		}
 		else
 		{
+			SPDLOG_LOGGER_INFO(logger, "No appdata env, making cache folder relative to current_path");
+
 			_root_cache_folder  = "./ImmediateModManager";
 			_root_cache_folder /= "cache";
 		}
+
+		SPDLOG_LOGGER_INFO(logger, L"root_cache_folder: {}", _root_cache_folder.wstring());
 	}
 
 	return _root_cache_folder;
@@ -518,9 +524,17 @@ static void on_game_folder_found()
 static void uninstall(ts::v1::package* package)
 {
 	const auto rom_plugins_plugin_folder = std::filesystem::path(s_app_cache.rom_folder_path_utf8) / "plugins" / package->full_name;
+
+	SPDLOG_LOGGER_INFO(logger, "uninstalling {}", package->full_name);
+	SPDLOG_LOGGER_INFO(logger, L"with path {}", rom_plugins_plugin_folder.wstring());
+
 	if (std::filesystem::exists(rom_plugins_plugin_folder))
 	{
 		std::filesystem::remove_all(rom_plugins_plugin_folder);
+	}
+	else
+	{
+		SPDLOG_LOGGER_INFO(logger, "path did not exist");
 	}
 
 	std::thread(
@@ -854,7 +868,7 @@ void gui::render_available_mods_panel()
 										    std::vector<std::filesystem::path> already_copied_directories;
 										    for (const auto& entry : std::filesystem::recursive_directory_iterator(extracted_zip_folder_path, std::filesystem::directory_options::skip_permission_denied))
 										    {
-											    std::cout << (char*)entry.path().u8string().c_str() << std::endl;
+											    SPDLOG_LOGGER_INFO(logger, entry.path().wstring());
 
 											    if (entry.path().parent_path() == extracted_zip_folder_path && !entry.is_directory())
 											    {
@@ -990,6 +1004,7 @@ static process_running_info is_process_running(const std::wstring& process_name)
 	const auto process_snapshot_handle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	if (process_snapshot_handle == INVALID_HANDLE_VALUE)
 	{
+		SPDLOG_LOGGER_INFO(logger, "Invalid handle value for process snapshot");
 		return {};
 	}
 
@@ -997,6 +1012,7 @@ static process_running_info is_process_running(const std::wstring& process_name)
 	pe32.dwSize         = sizeof(PROCESSENTRY32);
 	if (!Process32First(process_snapshot_handle, &pe32))
 	{
+		SPDLOG_LOGGER_INFO(logger, "Failed Process32First");
 		CloseHandle(process_snapshot_handle);
 		return {};
 	}
@@ -1055,10 +1071,21 @@ void gui::render_installed_mods_panel()
 		if (!std::filesystem::exists(app_cache_path))
 		{
 			std::filesystem::create_directories(app_cache_path);
+
+			if (std::filesystem::exists(app_cache_path))
+			{
+				SPDLOG_LOGGER_INFO(logger, L"Didnt manage to create app_cache_path directories {}", app_cache_path.wstring());
+			}
+			else
+			{
+				SPDLOG_LOGGER_INFO(logger, L"Created app_cache_path directories {}", app_cache_path.wstring());
+			}
 		}
 		app_cache_path /= "app_cache.json";
 		if (std::filesystem::exists(app_cache_path))
 		{
+			SPDLOG_LOGGER_INFO(logger, L"reading from app cache {}", app_cache_path.wstring());
+
 			std::ifstream app_cache_file_stream(app_cache_path);
 			s_app_cache = nlohmann::json::parse(app_cache_file_stream, nullptr, false, true);
 			if (std::filesystem::exists(s_app_cache.game_folder_path))
@@ -1072,6 +1099,14 @@ void gui::render_installed_mods_panel()
 				has_valid_game_folder_path = true;
 				on_game_folder_found();
 			}
+			else
+			{
+				SPDLOG_LOGGER_INFO(logger, L"game folder path does not exists {}", s_app_cache.game_folder_path);
+			}
+		}
+		else
+		{
+			SPDLOG_LOGGER_INFO(logger, L"No app cache {}", app_cache_path.wstring());
 		}
 
 		std::thread(
@@ -1084,6 +1119,14 @@ void gui::render_installed_mods_panel()
 				    if (risk_of_rain_returns_process_info.running)
 				    {
 					    const auto new_path = std::filesystem::path(risk_of_rain_returns_process_info.path).parent_path();
+
+					    static bool first_time_here = true;
+					    if (first_time_here)
+					    {
+						    SPDLOG_LOGGER_INFO(logger, L"Got risk of rain returns path {}", new_path.wstring());
+
+						    first_time_here = false;
+					    }
 
 					    if (new_path != s_app_cache.game_folder_path)
 					    {
@@ -1296,6 +1339,14 @@ void gui::render_installed_mods_panel()
 
 			ImGui::PushID(i);
 
+			if (installed_package.is_enabled)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 1.0f, 0.0f, 0.5f));
+			}
+			else
+			{
+				ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(1.0f, 0.0f, 0.0f, 0.5f));
+			}
 			if (ImGui::Toggle(installed_package.is_enabled ? "Enabled" : "Disabled", &installed_package.is_enabled, ImGuiToggleFlags_Animated))
 			{
 				for (auto& enabled_state : s_app_cache.active_profile->package_enabled_states)
@@ -1320,6 +1371,7 @@ void gui::render_installed_mods_panel()
 					}
 				}
 			}
+			ImGui::PopStyleColor();
 
 			if (ImGui::Button("Open Folder"))
 			{
@@ -1431,9 +1483,10 @@ void gui::render()
 		style.ScrollbarRounding = 9;
 		style.WindowRounding    = 7;
 		style.GrabRounding      = 3;
-		style.FrameRounding     = 3;
+		style.FrameRounding     = 6;
 		style.PopupRounding     = 4;
 		style.ChildRounding     = 4;
+		style.FrameBorderSize   = 1;
 
 		init_theme = false;
 	}
@@ -1441,7 +1494,7 @@ void gui::render()
 	// static bool id_stack_open = true;
 	// ImGui::ShowIDStackToolWindow(&id_stack_open);
 
-	// ImGui::ShowStyleEditor();
+	ImGui::ShowStyleEditor();
 
 	// if (m_show_demo_window)
 	// {
