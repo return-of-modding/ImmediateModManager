@@ -1074,11 +1074,11 @@ void gui::render_installed_mods_panel()
 
 			if (std::filesystem::exists(app_cache_path))
 			{
-				SPDLOG_LOGGER_INFO(logger, L"Didnt manage to create app_cache_path directories {}", app_cache_path.wstring());
+				SPDLOG_LOGGER_INFO(logger, L"Created app_cache_path directories {}", app_cache_path.wstring());
 			}
 			else
 			{
-				SPDLOG_LOGGER_INFO(logger, L"Created app_cache_path directories {}", app_cache_path.wstring());
+				SPDLOG_LOGGER_INFO(logger, L"Didnt manage to create app_cache_path directories {}", app_cache_path.wstring());
 			}
 		}
 		app_cache_path /= "app_cache.json";
@@ -1494,7 +1494,7 @@ void gui::render()
 	// static bool id_stack_open = true;
 	// ImGui::ShowIDStackToolWindow(&id_stack_open);
 
-	ImGui::ShowStyleEditor();
+	// ImGui::ShowStyleEditor();
 
 	// if (m_show_demo_window)
 	// {

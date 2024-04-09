@@ -20,6 +20,8 @@
 #include <locale.h>
 #include <tchar.h>
 
+#pragma comment(linker, "/SUBSYSTEM:windows /ENTRY:mainCRTStartup")
+
 // Data
 static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
 static IDXGISwapChain* g_pSwapChain             = nullptr;
